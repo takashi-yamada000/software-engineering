@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>CSV 発注者名検索</title>
+  <style>
+    body {
+      font-family: 'Meiryo', sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    h2 {
+      color: #333;
+      border-bottom: 2px solid #ddd;
+      padding-bottom: 10px;
+    }
+    .input-section, .search-section, .calendar-section {
+      margin: 20px 0;
+      padding: 15px;
+      background-color: #f5f5f5;
+      border-radius: 5px;
+    }
+    select, input[type="date"] {
+      padding: 8px;
+      width: 200px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+    }
+    button {
+      padding: 8px 15px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 5px;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+    #result {
+      margin-top: 20px;
+      padding: 15px;
+      background-color: #f9f9f9;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      white-space: pre-wrap;
+    }
+    .status {
+      margin-top: 10px;
+      color: #666;
+    }
+    /* カレンダースタイル */
+    .calendar {
+      margin-top: 15px;
+    }
+    .calendar-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .calendar-title {
+      font-size: 18px;
+      font-weight: bold;
+    }
+    .calendar-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .calendar-table th, .calendar-table td {
+      text-align: center;
+      padding: 8px;
+      border: 1px solid #ddd;
+    }
+    .calendar-table th {
+      background-color: #f0f0f0;
+    }
+    .calendar-table td {
+      height: 40px;
+      cursor: pointer;
+    }
+    .calendar-table td:hover {
+      background-color: #e0f7e0;
+    }
+    .calendar-today {
+      background-color: #e0e0ff;
+      font-weight: bold;
+    }
+    .calendar-selected {
+      background-color: #b3e0b3;
+      font-weight: bold;
+    }
+    .calendar-disabled {
+      color: #ccc;
+      background-color: #f9f9f9;
+      cursor: default;
+    }
+    .calendar-has-data {
+      position: relative;
+    }
+    .calendar-has-data::after {
+      content: "●";
+      font-size: 8px;
+      position: absolute;
+      bottom: 2px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #4CAF50;
+    }
+    .flex-container {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .date-range {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h2>CSVから発注者名を抽出して検索</h2>
+
+  <div class="input-section">
+    <p>CSVファイルを選択してください（発注者名の列を含むCSV）：</p>
+    <input type="file" id="csvFileInput" accept=".csv" />
+    <div id="fileStatus" class="status"></div>
+  </div>
+
+  <div class="search-section">
+    <div class="flex-container">
+      <div>
+        <label for="nameSelect">発注者名を選択:</label>
+        <select id="nameSelect"></select>
+      </div>
+      <div class="date-range">
+        <label for="dateFrom">期間:</label>
+        <input type="date" id="dateFrom">
+        <span>～</span>
+        <input type="date" id="dateTo">
+      </div>
+      <button id="searchButton" onclick="search()">検索</button>
+      <button id="resetButton" onclick="resetFilters()">リセット</button>
+    </div>
+  </div>
+
+  <div class="calendar-section">
+    <h3>カレンダー</h3>
+    <div class="calendar-header">
+      <button onclick="prevMonth()">&lt; 前月</button>
+      <div class="calendar-title" id="calendarTitle">2023年1月</div>
+      <button onclick="nextMonth()">次月 &gt;</button>
+    </div>
+    <div id="calendar" class="calendar"></div>
+  </div>
+
+  <pre id="result">結果がここに表示されます</pre>
+
+  <script>
+    let csvData = [];
+    let hattyuushaIndex = -1;
+    let dateIndex = -1;
+    let headers = [];
+    let currentDate = new Date();
+    let selectedDate = null;
+    let datesToHighlight = new Set(); // 日付データがある日を保存
+
+    document.getElementById("csvFileInput").addEventListener("change", function (event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      
+      const statusEl = document.getElementById("fileStatus");
+      statusEl.textContent = `ファイル「${file.name}」を読み込んでいます...`;
+      
+      const reader = new FileReader();
+
+      reader.onload = function (e) {
+        const text = e.target.result;
+        parseCSV(text);
+        statusEl.textContent = `ファイル「${file.name}」を読み込みました`;
+      };
+
+      reader.onerror = function () {
+        statusEl.textContent = "ファイルの読み込みに失敗しました";
+      };
+
+      reader.readAsText(file, "UTF-8");
+    });
+
+    function parseCSV(text) {
+      // CSVを行に分割
+      const lines = text.trim().split(/\r\n|\n|\r/).filter(line => line.trim() !== "");
+      
+      // 列名が空の場合に対応するため、まずCSVを解析
+      const parseRow = (row) => {
+        const result = [];
+        let inQuote = false;
+        let currentValue = "";
+        
+        for (let i = 0; i < row.length; i++) {
+          const char = row[i];
+          
+          if (char === '"' && !inQuote) {
+            inQuote = true;
+            continue;
+          }
+          
+          if (char === '"' && inQuote) {
+            // 次の文字も"であれば、エスケープされた"として扱う
+            if (i + 1 < row.length && row[i + 1] === '"') {
+              currentValue += '"';
+              i++;
+            } else {
+              inQuote = false;
+            }
+            continue;
+          }
+          
+          if (char === ',' && !inQuote) {
+            result.push(currentValue.trim());
+            currentValue = "";
+            continue;
+          }
+          
+          currentValue += char;
+        }
+        
+        result.push(currentValue.trim());
+        return result;
+      };
+
+      // ヘッダー取得と列名の整形
+      headers = parseRow(lines[0]);
+
+      // 発注者名の列インデックス取得
+      hattyuushaIndex = headers.findIndex(h => h.includes("発注者名"));
+      // 日付関連の列を探す
+      dateIndex = headers.findIndex(h => h.includes("勘定日") || h.includes("日付") || h.includes("date"));
+
+      if (hattyuushaIndex === -1) {
+        alert("CSVに「発注者名」列が見つかりません。列名を確認してください。");
+        return;
+      }
+
+      // データ読み込み
+      csvData = [];
+      datesToHighlight.clear();
+      
+      for (let i = 1; i < lines.length; i++) {
+        const rowData = parseRow(lines[i]);
+        // 行の長さがヘッダーと異なる場合、調整
+        while (rowData.length < headers.length) {
+          rowData.push("");
+        }
+        csvData.push(rowData);
+        
+        // 日付データがある場合、カレンダーハイライト用に保存
+        if (dateIndex !== -1 && rowData[dateIndex]) {
+          try {
+            // 日付フォーマットを解析（YYYY/MM/DD または YYYY-MM-DD を想定）
+            const dateStr = rowData[dateIndex].replace(/[年月]/g, "/").replace(/日/g, "");
+            const date = new Date(dateStr);
+            if (!isNaN(date.getTime())) {
+              datesToHighlight.add(date.toISOString().split('T')[0]);
+            }
+          } catch (e) {
+            // 日付解析エラーは無視
+          }
+        }
+      }
+
+      // 発注者名一覧をユニークに取得（空でないもの）
+      const names = [...new Set(
+        csvData
+          .map(row => row[hattyuushaIndex])
+          .filter(name => name && name.trim() !== "")
+      )].sort();
+
+      // セレクトボックスを更新
+      const select = document.getElementById("nameSelect");
+      select.innerHTML = "<option value=''>-- 発注者名を選択 --</option>" + 
+                        names.map(name => `<option value="${name}">${name}</option>`).join("");
+      
+      // 検索ボタンの有効化
+      document.getElementById("searchButton").disabled = names.length === 0;
+      
+      // カレンダーを表示
+      createCalendar(currentDate.getFullYear(), currentDate.getMonth());
+      
+      // 状態表示
+      document.getElementById("result").textContent = 
+        `CSVを読み込みました。発注者名は${names.length}件見つかりました。発注者名を選択して検索してください。`;
+    }
+
+    function search() {
+      const selectedName = document.getElementById("nameSelect").value;
+      const dateFrom = document.getElementById("dateFrom").value;
+      const dateTo = document.getElementById("dateTo").value;
+      
+      let results = csvData;
+      
+      // 発注者名でフィルタ
+      if (selectedName) {
+        results = results.filter(row => row[hattyuushaIndex] === selectedName);
+      }
+      
+      // 日付でフィルタ（日付列がある場合）
+      if (dateIndex !== -1 && (dateFrom || dateTo)) {
+        results = results.filter(row => {
+          if (!row[dateIndex]) return false;
+          
+          try {
+            // 日付フォーマットを解析（YYYY/MM/DD または YYYY-MM-DD を想定）
+            const dateStr = row[dateIndex].replace(/[年月]/g, "/").replace(/日/g, "");
+            const rowDate = new Date(dateStr);
+            
+            if (isNaN(rowDate.getTime())) return false;
+            
+            // 開始日チェック
+            if (dateFrom && new Date(dateFrom) > rowDate) return false;
+            
+            // 終了日チェック
+            if (dateTo && new Date(dateTo) < rowDate) return false;
+            
+            return true;
+          } catch (e) {
+            return false;
+          }
+        });
+      }
+      
+      // 結果をオブジェクトに変換
+      const formattedResults = results.map(row => {
+        const obj = {};
+        headers.forEach((h, i) => {
+          if (h) { // ヘッダーが空でない場合のみデータを追加
+            obj[h] = row[i] || "";
+          }
+        });
+        return obj;
+      });
+
+      // フィルタ条件の説明テキスト
+      let filterText = [];
+      if (selectedName) filterText.push(`発注者名: ${selectedName}`);
+      if (dateFrom) filterText.push(`開始日: ${dateFrom}`);
+      if (dateTo) filterText.push(`終了日: ${dateTo}`);
+      
+      const filterDescription = filterText.length > 0 
+        ? `[検索条件: ${filterText.join(', ')}]` 
+        : '';
+
+      document.getElementById("result").textContent = 
+        formattedResults.length > 0
+          ? `検索結果: ${formattedResults.length}件 ${filterDescription}\n\n${JSON.stringify(formattedResults, null, 2)}`
+          : `条件に一致するデータが見つかりませんでした。${filterDescription}`;
+    }
+    
+    function resetFilters() {
+      document.getElementById("nameSelect").selectedIndex = 0;
+      document.getElementById("dateFrom").value = "";
+      document.getElementById("dateTo").value = "";
+      selectedDate = null;
+      createCalendar(currentDate.getFullYear(), currentDate.getMonth());
+      document.getElementById("result").textContent = "フィルタをリセットしました。新しい検索条件を選択してください。";
+    }
+
+    // カレンダー表示関数
+    function createCalendar(year, month) {
+      const calendarElement = document.getElementById('calendar');
+      const calendarTitle = document.getElementById('calendarTitle');
+      
+      // 月の最初の日と最後の日を取得
+      const firstDay = new Date(year, month, 1);
+      const lastDay = new Date(year, month + 1, 0);
+      
+      // タイトル更新
+      calendarTitle.textContent = `${year}年${month + 1}月`;
+      
+      // カレンダーテーブル生成
+      let calendarHTML = '<table class="calendar-table">';
+      calendarHTML += '<tr><th>日</th><th>月</th><th>火</th><th>水</th><th>木</th><th>金</th><th>土</th></tr>';
+      
+      // 最初の週の空白セルを追加
+      calendarHTML += '<tr>';
+      const firstDayOfWeek = firstDay.getDay();
+      for (let i = 0; i < firstDayOfWeek; i++) {
+        calendarHTML += '<td class="calendar-disabled"></td>';
+      }
+      
+      // 日付セルを追加
+      let currentDateCounter = 1;
+      let dayOfWeek = firstDayOfWeek;
+      
+      const today = new Date();
+      const isCurrentMonth = today.getFullYear() === year && today.getMonth() === month;
+      
+      while (currentDateCounter <= lastDay.getDate()) {
+        // 週の始まりに新しい行を開始
+        if (dayOfWeek === 0 && currentDateCounter > 1) {
+          calendarHTML += '</tr><tr>';
+        }
+        
+        const currentDateObj = new Date(year, month, currentDateCounter);
+        const dateStr = currentDateObj.toISOString().split('T')[0];
+        const isToday = isCurrentMonth && today.getDate() === currentDateCounter;
+        const isSelected = selectedDate && selectedDate === dateStr;
+        const hasData = datesToHighlight.has(dateStr);
+        
+        let cellClass = "";
+        if (isToday) cellClass += " calendar-today";
+        if (isSelected) cellClass += " calendar-selected";
+        if (hasData) cellClass += " calendar-has-data";
+        
+        calendarHTML += `<td class="${cellClass}" onclick="selectDate('${dateStr}')">${currentDateCounter}</td>`;
+        
+        dayOfWeek = (dayOfWeek + 1) % 7;
+        currentDateCounter++;
+      }
+      
+      // 最後の週の空白セルを追加
+      while (dayOfWeek !== 0) {
+        calendarHTML += '<td class="calendar-disabled"></td>';
+        dayOfWeek = (dayOfWeek + 1) % 7;
+      }
+      
+      calendarHTML += '</tr></table>';
+      calendarElement.innerHTML = calendarHTML;
+    }
+    
+    // 月を変更する関数
+    function prevMonth() {
+      currentDate.setMonth(currentDate.getMonth() - 1);
+      createCalendar(currentDate.getFullYear(), currentDate.getMonth());
+    }
+    
+    function nextMonth() {
+      currentDate.setMonth(currentDate.getMonth() + 1);
+      createCalendar(currentDate.getFullYear(), currentDate.getMonth());
+    }
+    
+    // 日付選択関数
+    function selectDate(dateStr) {
+      selectedDate = dateStr;
+      
+      // 日付入力欄を更新
+      document.getElementById("dateFrom").value = dateStr;
+      document.getElementById("dateTo").value = dateStr;
+      
+      // カレンダー再描画
+      createCalendar(currentDate.getFullYear(), currentDate.getMonth());
+      
+      // 検索実行
+      search();
+    }
+    
+    // 初期カレンダー表示
+    createCalendar(currentDate.getFullYear(), currentDate.getMonth());
+  </script>
+</body>
+</html>
