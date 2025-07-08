@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>CSV 発注者名検索</title>
+  <style>
+    body {
+      font-family: 'Meiryo', sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    h2 {
+      color: #333;
+      border-bottom: 2px solid #ddd;
+      padding-bottom: 10px;
+    }
+    .input-section, .search-section {
+      margin: 20px 0;
+      padding: 15px;
+      background-color: #f5f5f5;
+      border-radius: 5px;
+    }
+    select, input[type="date"] {
+      padding: 8px;
+      width: 200px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+    }
+    button {
+      padding: 8px 15px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 5px;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+    #result {
+      margin-top: 20px;
+      padding: 15px;
+      background-color: #f9f9f9;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      background-color: white;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 8px;
+      text-align: left;
+    }
+    th {
+      background-color: #4CAF50;
+      color: white;
+      font-weight: bold;
+    }
+    tr:nth-child(even) {
+      background-color: #f2f2f2;
+    }
+    tr:hover {
+      background-color: #e8f5e8;
+    }
+    .status {
+      margin-top: 10px;
+      color: #666;
+    }
+    .flex-container {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .date-range {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h2>入金情報の検索</h2>
+
+  <div class="input-section">
+    <p>CSVファイルを選択してください（発注者名の列を含むCSV）：</p>
+    <input type="file" id="csvFileInput" accept=".csv" />
+    <div id="fileStatus" class="status"></div>
+  </div>
+
+  <div class="search-section">
+    <div class="flex-container">
+      <div>
+        <label for="nameSelect">発注者名を選択:</label>
+        <select id="nameSelect"></select>
+      </div>
+      <div class="date-range">
+        <label for="dateFrom">期間:</label>
+        <input type="date" id="dateFrom">
+        <span>～</span>
+        <input type="date" id="dateTo">
+      </div>
+      <button id="searchButton" onclick="search()">検索</button>
+      <button id="resetButton" onclick="resetFilters()">リセット</button>
+    </div>
+  </div>
+
+  <div id="result">結果がここに表示されます</div>
+
+  <script>
+    let csvData = [];
+    let hattyuushaIndex = -1;
+    let dateIndex = -1;
+    let amountIndex = -1;
+    let headers = [];
+
+    document.getElementById("csvFileInput").addEventListener("change", function (event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      
+      const statusEl = document.getElementById("fileStatus");
+      statusEl.textContent = `ファイル「${file.name}」を読み込んでいます...`;
+      
+      const reader = new FileReader();
+
+      reader.onload = function (e) {
+        const text = e.target.result;
+        parseCSV(text);
+        statusEl.textContent = `ファイル「${file.name}」を読み込みました`;
+      };
+
+      reader.onerror = function () {
+        statusEl.textContent = "ファイルの読み込みに失敗しました";
+      };
+
+      reader.readAsText(file, "UTF-8");
+    });
+
+    function parseCSV(text) {
+      // CSVを行に分割
+      const lines = text.trim().split(/\r\n|\n|\r/).filter(line => line.trim() !== "");
+      
+      // 列名が空の場合に対応するため、まずCSVを解析
+      const parseRow = (row) => {
+        const result = [];
+        let inQuote = false;
+        let currentValue = "";
+        
+        for (let i = 0; i < row.length; i++) {
+          const char = row[i];
+          
+          if (char === '"' && !inQuote) {
+            inQuote = true;
+            continue;
+          }
+          
+          if (char === '"' && inQuote) {
+            // 次の文字も"であれば、エスケープされた"として扱う
+            if (i + 1 < row.length && row[i + 1] === '"') {
+              currentValue += '"';
+              i++;
+            } else {
+              inQuote = false;
+            }
+            continue;
+          }
+          
+          if (char === ',' && !inQuote) {
+            result.push(currentValue.trim());
+            currentValue = "";
+            continue;
+          }
+          
+          currentValue += char;
+        }
+        
+        result.push(currentValue.trim());
+        return result;
+      };
+
+      // ヘッダー取得と列名の整形
+      headers = parseRow(lines[0]);
+
+      // 必要な列のインデックスを取得
+      hattyuushaIndex = headers.findIndex(h => h.includes("発注者名"));
+      dateIndex = headers.findIndex(h => h.includes("勘定日") || h.includes("日付") || h.includes("date"));
+      amountIndex = headers.findIndex(h => h.includes("入金金額") || h.includes("金額") || h.includes("amount"));
+
+      if (hattyuushaIndex === -1) {
+        alert("CSVに「発注者名」列が見つかりません。列名を確認してください。");
+        return;
+      }
+
+      // データ読み込み
+      csvData = [];
+      
+      for (let i = 1; i < lines.length; i++) {
+        const rowData = parseRow(lines[i]);
+        // 行の長さがヘッダーと異なる場合、調整
+        while (rowData.length < headers.length) {
+          rowData.push("");
+        }
+        csvData.push(rowData);
+      }
+
+      // 発注者名一覧をユニークに取得（空でないもの）
+      const names = [...new Set(
+        csvData
+          .map(row => row[hattyuushaIndex])
+          .filter(name => name && name.trim() !== "")
+      )].sort();
+
+      // セレクトボックスを更新
+      const select = document.getElementById("nameSelect");
+      select.innerHTML = "<option value=''>-- 発注者名を選択 --</option>" + 
+                        names.map(name => `<option value="${name}">${name}</option>`).join("");
+      
+      // 検索ボタンの有効化
+      document.getElementById("searchButton").disabled = names.length === 0;
+      
+      // 状態表示
+      document.getElementById("result").textContent = 
+        `CSVを読み込みました。発注者名は${names.length}件見つかりました。発注者名を選択して検索してください。`;
+    }
+
+    function search() {
+      const selectedName = document.getElementById("nameSelect").value;
+      const dateFrom = document.getElementById("dateFrom").value;
+      const dateTo = document.getElementById("dateTo").value;
+      
+      let results = csvData;
+      
+      // 発注者名でフィルタ
+      if (selectedName) {
+        results = results.filter(row => row[hattyuushaIndex] === selectedName);
+      }
+      
+      // 日付でフィルタ（日付列がある場合）
+      if (dateIndex !== -1 && (dateFrom || dateTo)) {
+        results = results.filter(row => {
+          if (!row[dateIndex]) return false;
+          
+          try {
+            // 日付フォーマットを解析（YYYY/MM/DD または YYYY-MM-DD を想定）
+            const dateStr = row[dateIndex].replace(/[年月]/g, "/").replace(/日/g, "");
+            const rowDate = new Date(dateStr);
+            
+            if (isNaN(rowDate.getTime())) return false;
+            
+            // 開始日チェック
+            if (dateFrom && new Date(dateFrom) > rowDate) return false;
+            
+            // 終了日チェック
+            if (dateTo && new Date(dateTo) < rowDate) return false;
+            
+            return true;
+          } catch (e) {
+            return false;
+          }
+        });
+      }
+      
+      // 結果を必要な列のみに絞り込み
+      const formattedResults = results.map(row => {
+        const obj = {};
+        
+        // 勘定日
+        if (dateIndex !== -1) {
+          obj['勘定日'] = row[dateIndex] || "";
+        }
+        
+        // 入金金額（該当列とその隣の列も含める）
+        if (amountIndex !== -1) {
+          const amountValue = row[amountIndex] || "";
+          if (amountValue.trim() !== "") {
+            obj['入金金額'] = amountValue;
+          }
+          // 隣の列も金額関連の可能性があるため追加
+          if (amountIndex + 1 < row.length) {
+            const nextColumnHeader = headers[amountIndex + 1] || `列${amountIndex + 2}`;
+            const nextValue = row[amountIndex + 1] || "";
+            if (nextValue.trim() !== "") {
+              obj[nextColumnHeader] = nextValue;
+            }
+          }
+        }
+        
+        // 発注者名
+        obj['発注者名'] = row[hattyuushaIndex] || "";
+        
+        return obj;
+      });
+
+      // フィルタ条件の説明テキスト
+      let filterText = [];
+      if (selectedName) filterText.push(`発注者名: ${selectedName}`);
+      if (dateFrom) filterText.push(`開始日: ${dateFrom}`);
+      if (dateTo) filterText.push(`終了日: ${dateTo}`);
+      
+      const filterDescription = filterText.length > 0 
+        ? `[検索条件: ${filterText.join(', ')}]` 
+        : '';
+
+      const resultElement = document.getElementById("result");
+
+      if (formattedResults.length > 0) {
+        // テーブルを作成
+        let tableHTML = `<p>検索結果: ${formattedResults.length}件 ${filterDescription}</p>`;
+        tableHTML += '<table><thead><tr>';
+        
+        // ヘッダー行を作成（最初の結果のキーを使用）
+        const headers = Object.keys(formattedResults[0]);
+        headers.forEach(header => {
+          tableHTML += `<th>${header}</th>`;
+        });
+        tableHTML += '</tr></thead><tbody>';
+        
+        // データ行を作成
+        formattedResults.forEach(row => {
+          tableHTML += '<tr>';
+          headers.forEach(header => {
+            const value = row[header] || '';
+            tableHTML += `<td>${value}</td>`;
+          });
+          tableHTML += '</tr>';
+        });
+        
+        tableHTML += '</tbody></table>';
+        resultElement.innerHTML = tableHTML;
+      } else {
+        resultElement.innerHTML = `<p>条件に一致するデータが見つかりませんでした。${filterDescription}</p>`;
+      }
+    }
+    
+    function resetFilters() {
+      document.getElementById("nameSelect").selectedIndex = 0;
+      document.getElementById("dateFrom").value = "";
+      document.getElementById("dateTo").value = "";
+      document.getElementById("result").innerHTML = "<p>フィルタをリセットしました。新しい検索条件を選択してください。</p>";
+    }
+  </script>
+</body>
+</html>
